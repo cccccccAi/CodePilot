@@ -20,7 +20,7 @@ import { isImageFile } from '@/types';
 import { registerPendingPermission } from './permission-registry';
 import { registerConversation, unregisterConversation } from './conversation-registry';
 import { getSetting, getActiveProvider, updateSdkSessionId, createPermissionRequest } from './db';
-import { findClaudeBinary, findGitBash, getExpandedPath } from './platform';
+import { findClaudeBinary, findGitBash, getExpandedPath, getClaudeOAuthTokenFromKeychain } from './platform';
 import { notifyPermissionRequest, notifyGeneric } from './telegram-bot';
 import os from 'os';
 import fs from 'fs';
@@ -358,9 +358,16 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
           if (appBaseUrl) {
             sdkEnv.ANTHROPIC_BASE_URL = appBaseUrl;
           }
-          // If neither legacy settings nor env vars provide a key, log a warning
+          // If neither legacy settings nor env vars provide a key,
+          // try to read the OAuth token from macOS Keychain (claude auth login / subscription).
           if (!appToken && !sdkEnv.ANTHROPIC_API_KEY && !sdkEnv.ANTHROPIC_AUTH_TOKEN) {
-            console.warn('[claude-client] No API key found: no active provider, no legacy settings, and no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN in environment');
+            const keychainToken = getClaudeOAuthTokenFromKeychain();
+            if (keychainToken) {
+              sdkEnv.ANTHROPIC_AUTH_TOKEN = keychainToken;
+              console.log('[claude-client] Using OAuth token from macOS Keychain');
+            } else {
+              console.warn('[claude-client] No API key found: no active provider, no legacy settings, no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN in environment, and no Keychain token');
+            }
           }
         }
 

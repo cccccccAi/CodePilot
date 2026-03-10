@@ -234,3 +234,28 @@ export function findGitBash(): string | null {
 
   return null;
 }
+
+/**
+ * Read Claude Code's OAuth access token from macOS Keychain.
+ * Claude Code stores credentials under service "Claude Code-credentials",
+ * account = current username, as a JSON blob with shape:
+ *   { claudeAiOauth: { accessToken, refreshToken, expiresAt, ... } }
+ *
+ * Returns the accessToken string, or null if unavailable / not macOS.
+ */
+export function getClaudeOAuthTokenFromKeychain(): string | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const raw = execFileSync(
+      '/usr/bin/security',
+      ['find-generic-password', '-a', process.env.USER || os.userInfo().username, '-w', '-s', 'Claude Code-credentials'],
+      { timeout: 3000, stdio: 'pipe' },
+    ).toString().trim();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const token = parsed?.claudeAiOauth?.accessToken;
+    return typeof token === 'string' && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
