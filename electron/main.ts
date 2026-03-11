@@ -330,40 +330,33 @@ function parseEnvOutput(output: string): Record<string, string> {
 }
 
 /**
- * Read macOS system proxy settings via `scutil --proxy`.
- * Returns HTTPS_PROXY / HTTP_PROXY env vars if enabled in System Settings.
+ * Resolve system proxy for api.anthropic.com using Electron's built-in proxy
+ * resolution (same engine as Chromium). Works cross-platform: macOS, Windows,
+ * Linux — including PAC files and WinHTTP settings.
+ *
+ * Must be called after app.whenReady() so session is available.
  */
-function getSystemProxyFromScutil(): Record<string, string> {
-  if (process.platform !== "darwin") return {};
+async function getProxyEnvFromSystem(): Promise<Record<string, string>> {
   try {
-    const out = execFileSync("/usr/sbin/scutil", ["--proxy"], {
-      timeout: 3000,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-    const result: Record<string, string> = {};
-    const httpsEnabled = /HTTPSEnable\s*:\s*1/.test(out);
-    const httpEnabled = /HTTPEnable\s*:\s*1/.test(out);
-    const httpsProxyMatch = out.match(/HTTPSProxy\s*:\s*(.+)/);
-    const httpsPortMatch = out.match(/HTTPSPort\s*:\s*(\d+)/);
-    const httpProxyMatch = out.match(/HTTPProxy\s*:\s*(.+)/);
-    const httpPortMatch = out.match(/HTTPPort\s*:\s*(\d+)/);
-    if (httpsEnabled && httpsProxyMatch) {
-      const host = httpsProxyMatch[1].trim();
-      const port = httpsPortMatch ? httpsPortMatch[1].trim() : "443";
-      result.HTTPS_PROXY = `http://${host}:${port}`;
-      result.https_proxy = result.HTTPS_PROXY;
+    const result = await session.defaultSession.resolveProxy(
+      "https://api.anthropic.com",
+    );
+    // result format: "PROXY host:port" | "DIRECT" | "PROXY h1:p1; PROXY h2:p2"
+    const match = result.match(/PROXY\s+([^;\s]+)/i);
+    if (match) {
+      const proxyUrl = `http://${match[1]}`;
+      console.log(`Resolved system proxy for api.anthropic.com: ${proxyUrl}`);
+      return {
+        HTTPS_PROXY: proxyUrl,
+        https_proxy: proxyUrl,
+        HTTP_PROXY: proxyUrl,
+        http_proxy: proxyUrl,
+      };
     }
-    if (httpEnabled && httpProxyMatch) {
-      const host = httpProxyMatch[1].trim();
-      const port = httpPortMatch ? httpPortMatch[1].trim() : "80";
-      result.HTTP_PROXY = `http://${host}:${port}`;
-      result.http_proxy = result.HTTP_PROXY;
-    }
-    return result;
-  } catch {
-    return {};
+  } catch (err) {
+    console.warn("Failed to resolve system proxy:", err);
   }
+  return {};
 }
 
 /**
@@ -372,13 +365,15 @@ function getSystemProxyFromScutil(): Record<string, string> {
  * (Linux), process.env is very limited and won't include vars from
  * .zshrc/.bashrc (e.g. API keys, nvm PATH, HTTPS_PROXY).
  *
- * Uses a three-level cascade to handle slow shell startup (e.g. oh-my-zsh):
+ * Uses a two-level cascade to handle slow shell startup (e.g. oh-my-zsh):
  * 1. Non-interactive login shell (fast, ~1s)
  * 2. Interactive login shell (slower, handles oh-my-zsh etc.)
- * 3. scutil --proxy fallback (proxy-only, no shell dependency)
+ *
+ * Proxy fallback is handled separately via getProxyEnvFromSystem() after
+ * app.whenReady() — cross-platform and more reliable than shell/scutil.
  */
 function loadUserShellEnv(): Record<string, string> {
-  // Windows GUI apps inherit the full user environment
+  // Windows GUI apps inherit the full user environment from the system
   if (process.platform === "win32") {
     return {};
   }
@@ -395,9 +390,6 @@ function loadUserShellEnv(): Record<string, string> {
     console.log(
       `Loaded ${Object.keys(env).length} env vars from user shell (non-interactive)`,
     );
-    if (!env.HTTPS_PROXY && !env.https_proxy) {
-      Object.assign(env, getSystemProxyFromScutil());
-    }
     return env;
   } catch {
     /* fall through */
@@ -414,19 +406,9 @@ function loadUserShellEnv(): Record<string, string> {
     console.log(
       `Loaded ${Object.keys(env).length} env vars from user shell (interactive)`,
     );
-    if (!env.HTTPS_PROXY && !env.https_proxy) {
-      Object.assign(env, getSystemProxyFromScutil());
-    }
     return env;
   } catch (err) {
     console.warn("Failed to load user shell env from login shell:", err);
-  }
-
-  // Method 3: proxy-only fallback via macOS System Preferences
-  const proxyEnv = getSystemProxyFromScutil();
-  if (Object.keys(proxyEnv).length > 0) {
-    console.log("Loaded proxy settings from macOS System Preferences");
-    return proxyEnv;
   }
 
   return {};
@@ -674,6 +656,14 @@ function createWindow(url?: string) {
 app.whenReady().then(async () => {
   // Load user's full shell environment (API keys, PATH, etc.)
   userShellEnv = loadUserShellEnv();
+
+  // If shell env has no proxy, fall back to system proxy resolution.
+  // Uses Electron's built-in Chromium proxy engine — cross-platform
+  // (macOS scutil, Windows WinHTTP/IE settings, Linux gsettings, PAC files).
+  if (!userShellEnv.HTTPS_PROXY && !userShellEnv.https_proxy) {
+    const systemProxy = await getProxyEnvFromSystem();
+    Object.assign(userShellEnv, systemProxy);
+  }
 
   // Verify native module ABI compatibility before starting the server
   checkNativeModuleABI();
