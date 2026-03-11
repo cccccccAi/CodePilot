@@ -665,6 +665,33 @@ app.whenReady().then(async () => {
     Object.assign(userShellEnv, systemProxy);
   }
 
+  // Last fallback: read proxy from ~/.claude/settings.json env field.
+  // This allows users to configure proxy via the CodePilot settings UI,
+  // persisted as HTTPS_PROXY in the CLI settings env object.
+  if (!userShellEnv.HTTPS_PROXY && !userShellEnv.https_proxy) {
+    try {
+      const claudeSettingsPath = path.join(
+        os.homedir(),
+        ".claude",
+        "settings.json",
+      );
+      if (fs.existsSync(claudeSettingsPath)) {
+        const raw = fs.readFileSync(claudeSettingsPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        const envProxy = parsed?.env?.HTTPS_PROXY || parsed?.env?.https_proxy;
+        if (envProxy) {
+          userShellEnv.HTTPS_PROXY = envProxy;
+          userShellEnv.https_proxy = envProxy;
+          userShellEnv.HTTP_PROXY = envProxy;
+          userShellEnv.http_proxy = envProxy;
+          console.log(`Loaded proxy from ~/.claude/settings.json: ${envProxy}`);
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
   // Verify native module ABI compatibility before starting the server
   checkNativeModuleABI();
 
