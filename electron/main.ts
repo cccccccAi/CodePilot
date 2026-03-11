@@ -379,39 +379,61 @@ function loadUserShellEnv(): Record<string, string> {
   }
   const shell = process.env.SHELL || "/bin/zsh";
 
-  // Method 1: non-interactive login shell (fast)
+  // Method 1: non-interactive login shell (fast, sources .zprofile/.bash_profile)
+  let env1: Record<string, string> = {};
   try {
     const result = execFileSync(shell, ["-lc", "env"], {
       timeout: 5000,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
-    const env = parseEnvOutput(result);
+    env1 = parseEnvOutput(result);
     console.log(
-      `Loaded ${Object.keys(env).length} env vars from user shell (non-interactive)`,
+      `Loaded ${Object.keys(env1).length} env vars from user shell (non-interactive)`,
     );
-    return env;
   } catch {
     /* fall through */
   }
 
-  // Method 2: full interactive login shell (slower, handles oh-my-zsh etc.)
+  // Method 2: full interactive login shell (slower, also sources .zshrc)
+  // Always run this so we capture PATH customizations that live only in .zshrc.
+  let env2: Record<string, string> = {};
   try {
     const result = execFileSync(shell, ["-ilc", "env"], {
       timeout: 10000,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
-    const env = parseEnvOutput(result);
+    env2 = parseEnvOutput(result);
     console.log(
-      `Loaded ${Object.keys(env).length} env vars from user shell (interactive)`,
+      `Loaded ${Object.keys(env2).length} env vars from user shell (interactive)`,
     );
-    return env;
   } catch (err) {
-    console.warn("Failed to load user shell env from login shell:", err);
+    console.warn(
+      "Failed to load user shell env from interactive login shell:",
+      err,
+    );
   }
 
-  return {};
+  if (!Object.keys(env1).length && !Object.keys(env2).length) {
+    return {};
+  }
+
+  // Merge: start from env1, overlay env2, but for PATH take the union so that
+  // dirs only in .zshrc (env2) are not lost.
+  const merged = { ...env1, ...env2 };
+  const path1Dirs = (env1.PATH || "").split(":").filter(Boolean);
+  const path2Dirs = (env2.PATH || "").split(":").filter(Boolean);
+  const seen = new Set<string>();
+  const mergedPath: string[] = [];
+  for (const d of [...path2Dirs, ...path1Dirs]) {
+    if (d && !seen.has(d)) {
+      seen.add(d);
+      mergedPath.push(d);
+    }
+  }
+  if (mergedPath.length) merged.PATH = mergedPath.join(":");
+  return merged;
 }
 
 /**
